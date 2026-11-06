@@ -25,6 +25,19 @@ the array to access when we use them.
 
 SUPPORTED_GLS=[1,2]
 
+# Access-level overrides, by register name.
+#
+# dump_struct derives .access = PL<n>_RW from an _EL<n>/_GL<n> name suffix. That
+# is right for exception levels, but GL is a *guarded* level, not an exception
+# level, and the two are not interchangeable: XNU on t8020 writes both
+# SP_SETUP registers from __pinst thunks while running at EL1. Deriving PL2_RW
+# from the GL2 suffix makes QEMU's access check trap that write, which on A12
+# lands in the kernel's own exception handler and stalls the boot before the
+# console comes up. Pin them to EL1 so the access check matches the hardware.
+FORCE_ACCESS_EL = {
+    "SP_SETUP_GL2": 1,
+}
+
 rs_cpustate = [
     "CURRENTG",
     "SPRR_UPERM_EL0",
@@ -190,6 +203,17 @@ rs_opaque = [
     "JAPIBKEYHI_EL1",
     "JAPIBKEYLO_EL1",
     "AGTCNTRDIR_EL1",
+
+    # Named in sysregs.py but never emitted, so an msr to either raised an
+    # Undefined Instruction. XNU on t8020 (A12) writes both from __pinst
+    # thunks during early EL1 setup.
+    #
+    # Deliberately NOT adding AGTCNTV_CTL_EL0 here: QEMU's own tables already
+    # define it at (3,1,15,0,5) as a real Apple alternate-timer register wired
+    # to cp15.c14_timer[GTIMER_VIRT], so emitting an opaque copy collides in
+    # add_cpreg_to_hashtable().
+    "SP_SETUP_GL1",
+    "SP_SETUP_GL2",
 ]
 
 macros = '''
@@ -216,6 +240,7 @@ def dump_struct(r, is_cpustate=False, is_banked=False):
         el = int(r.split("_EL")[1])
     if "_GL" in r:
         el = int(r.split("_GL")[1])
+    el = FORCE_ACCESS_EL.get(r, el)
 
     s = f"""    {{
         .name = "{r.upper()}", .state = ARM_CP_STATE_AA64, .access = PL{el}_RW,
