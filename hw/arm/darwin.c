@@ -125,8 +125,23 @@ static void init_cpu_impl(struct dtree_node *dt_root) {
     struct dtree_node *cpu0 = adt_find_node(dt_root, "cpus/cpu0");
     struct adt_io_reg *cpu_impl = adt_get_prop_val(cpu0, "cpu-impl-reg");
     struct adt_io_reg *cpm_impl = adt_get_prop_val(cpu0, "cpm-impl-reg");
-    alloc_zeroed("cpu_reg_impl", cpu_impl[0].base, cpu_impl[0].len);
-    alloc_zeroed("cpm_reg_impl", cpm_impl[0].base, cpm_impl[0].len);
+
+    // cpu-impl-reg and cpm-impl-reg describe the per-core and per-cluster
+    // implementation register apertures. Neither is present on t8020 (A12) or
+    // earlier, where the kernel never reads them, so there is nothing to back
+    // with memory. Map only what the device tree actually advertises; on any
+    // tree that has both this behaves exactly as before.
+    if (cpu_impl) {
+        alloc_zeroed("cpu_reg_impl", cpu_impl[0].base, cpu_impl[0].len);
+    } else {
+        fprintf(stderr, "note: no cpus/cpu0/cpu-impl-reg in the device tree, not mapping it\n");
+    }
+
+    if (cpm_impl) {
+        alloc_zeroed("cpm_reg_impl", cpm_impl[0].base, cpm_impl[0].len);
+    } else {
+        fprintf(stderr, "note: no cpus/cpu0/cpm-impl-reg in the device tree, not mapping it\n");
+    }
 }
 
 static u32 armio_get_irqnum(struct dtree_node *node) {
