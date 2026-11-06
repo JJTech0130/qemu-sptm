@@ -61,6 +61,19 @@ static void a##_darwin_class_set(Object *obj, const char *path, Error **errp) { 
     s->bootinfo.a = g_strdup(path); \
 }
 
+// Which exception level to hand XNU.
+//
+// SPTM runs at EL2 and performs the handoff to XNU itself, so an SPTM boot has
+// to start at EL2. Without SPTM, iBoot enters XNU at EL1 on real hardware, and
+// the kernel keys off CurrentEL: entered at EL2 it takes the VHE path and uses
+// the _EL12/_EL02 register aliases, which are UNDEFINED unless HCR_EL2.E2H is
+// set. On t8020 that traps in a __pinst thunk before VBAR_EL2 is installed, so
+// the vector at PC 0x200 is unmapped, the prefetch abort re-vectors to 0x200
+// forever, and the boot is silent on every iOS version from 12.4 to 18.7.11.
+//
+// TrungNguyen1909/qemu-t8030 boots A13 the same way (has_el2 = false).
+#define XNU_WANTS_EL2(info)      (( NULL != ((info))->sptm ))
+
 void arm_load_xnu(ARMCPU *cpu, MachineState *ms, struct xnu_boot_info *info);
 
 #endif /* XNUBOOT_H */

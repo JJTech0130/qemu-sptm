@@ -82,13 +82,16 @@ static void do_darwin_reset(void *state) {
 
     cpu_reset(cs);
 
-    assert(2 == arm_highest_el(env));
+    // See XNU_WANTS_EL2: an SPTM boot starts at EL2, a non-SPTM one at EL1.
+    const bool use_el2 = XNU_WANTS_EL2(&s->bootinfo);
+
+    assert((use_el2 ? 2 : 1) == arm_highest_el(env));
     env->xregs[0] = s->bootinfo.init_x0;
     env->pc = s->bootinfo.init_pc;
 
     // SPTM needs fpu enabled:
     env->cp15.cpacr_el1 |= CPACR_ENABLE_FPU;
-    env->cp15.cptr_el[2] |= CPTR_ENABLE_FPU;
+    if (use_el2) env->cp15.cptr_el[2] |= CPTR_ENABLE_FPU;
     arm_rebuild_hflags(env);
 }
 
@@ -234,7 +237,9 @@ static void darwin_init(MachineState *ms) {
     DeviceState *cpudev = DEVICE(cpuobj);
     ARMCPU *cpu = ARM_CPU(cpuobj);
 
-    cpu->has_el2 = true;
+    const bool use_el2 = XNU_WANTS_EL2(info);
+
+    cpu->has_el2 = use_el2;
     cpu->has_el3 = false;
 
     // Disable CBAR because some MSRs conflict with Apple Si specific ones (see aarch64_a57_initfn)
@@ -243,8 +248,11 @@ static void darwin_init(MachineState *ms) {
     unset_feature(&cpu->env, ARM_FEATURE_EL3);
     unset_feature(&cpu->env, ARM_FEATURE_PMU);
 
-    // SPTM requires EL2, and non-SPTM XNU can run in either EL1 or EL2, so just always use EL2
-    set_feature(&cpu->env, ARM_FEATURE_EL2);
+    if (use_el2) {
+        set_feature(&cpu->env, ARM_FEATURE_EL2);
+    } else {
+        unset_feature(&cpu->env, ARM_FEATURE_EL2);
+    }
 
     struct dtree_node *cpu_node = adt_find_node(dt_root, "cpus/cpu0");
     u32 dtree_frq = *(u32*)adt_get_prop_val(cpu_node, "clock-frequency");
