@@ -65,6 +65,36 @@ static const ARMCPRegInfo apple_pmcregs[] = {
     },
 };
 
+// Pre-VHE register aliases.
+//
+// A12 and earlier reach some registers at what a modern register table calls
+// the _EL12 alias encoding, and they do it from EL1. QEMU knows those
+// encodings only as the VHE redirect targets of the corresponding EL1
+// register, which are UNDEFINED unless HCR_EL2.E2H is set - and on a non-SPTM
+// boot XNU is handed EL1, where there is no VHE at all. Without these, PPL
+// bootstrap on t8020 reads S3_4_c15_c2_6 from __PPLTEXT, takes an Undefined
+// Instruction, and panics with "could not instantiate ppl environment".
+//
+// Each alias shares storage with the EL1/EL0 register it shadows, which is
+// what the hardware does. They are defined only when EL2 is absent, so an
+// SPTM boot keeps QEMU's own VHE redirect handling untouched.
+//
+// ARM_CP_OVERRIDE is required, not cosmetic: QEMU registers a register's
+// vhe_redir_to_el01 encoding in the same hash table as the register itself, so
+// VMSA_LOCK_EL1 already owns (3,4,15,2,6). Without the flag,
+// add_cpreg_to_hashtable() aborts on the duplicate key. Setting it is the
+// documented way to say "replace that entry on purpose" - here, to swap a VHE
+// redirect alias that can never fire for a directly readable EL1 register.
+static const ARMCPRegInfo apple_legacy_el1_aliases[] = {
+    {
+        // VMSA_LOCK_EL12 encoding, aliased onto VMSA_LOCK_EL1
+        .name = "VMSA_LOCK_EL1_NOVHE", .state = ARM_CP_STATE_AA64, .access = PL1_RW,
+        .type = ARM_CP_OVERRIDE,
+        .opc0 = 3, .opc1 = 4, .crn = 15, .crm = 2, .opc2 = 6,
+        .readfn = vmsa_lock_el1_read, .writefn = vmsa_lock_el1_write,
+    },
+};
+
 static u64 *_adt_find_region(struct dtree_node *dt_root, const char *name) {
     struct dtree_node *mem_map = adt_find_node(dt_root, "chosen/memory-map");
     assert(mem_map);
@@ -150,4 +180,8 @@ void apple_regs_init(ARMCPU *cpu, AMCCState *amcc, struct dtree_node *dt_root, s
 
     define_arm_cp_regs(cpu, apple_sysregs);
     define_arm_cp_regs(cpu, apple_pmcregs);
+
+    if (!XNU_WANTS_EL2(info)) {
+        define_arm_cp_regs(cpu, apple_legacy_el1_aliases);
+    }
 }
