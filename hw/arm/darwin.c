@@ -172,6 +172,54 @@ static void init_sep(struct dtree_node *dt_root) {
     alloc_zeroed("sep", sep_reg[0].base, sep_reg[0].len);
 }
 
+// Low-priority RAM behind the whole arm-io window, for trees that predate the
+// SPTM era.
+//
+// qemu-sptm models the handful of peripherals a modern kernel needs and tells
+// the kernel it is virtualised via `defaults/vmm-present`, so everything else
+// is simply absent. iOS 12 and 13 do not know that property - it postdates
+// them - so they drive the real hardware: the KTRR lockdown registers in
+// arm-io/mcc, then arm-io/pmgr, and so on. Each unbacked aperture is a
+// synchronous external abort (ESR 0x960000.., DFSC 0x10) with no diagnostic,
+// and there are far too many to stub one at a time.
+//
+// Back the window itself instead. RAM, not MMIO-returning-zero, because the
+// lockdown path writes a limit and then reads it back to verify. Priority -1
+// keeps every real device (AIC, UART, AMCC, SEP, cpu-impl) in front of this,
+// so a tree that models a peripheral still gets the model.
+//
+// Only reached when the tree has no chosen/lock-regs/amcc node, which is the
+// pre-A13 shape; A13+ and every SPTM target are untouched.
+static void alloc_zeroed_background(const char *name, hwaddr pa, size_t len) {
+    MemoryRegion *ram_main = get_system_memory();
+    MemoryRegion *ram_subreg = g_new(MemoryRegion, 1);
+    memory_region_init_ram(ram_subreg, NULL, name, len, &error_fatal);
+    memory_region_add_subregion_overlap(ram_main, pa, ram_subreg, -1);
+}
+
+#define ARM_IO_RANGE_CELLS   3
+
+static void init_legacy_armio(struct dtree_node *dt_root) {
+    struct dtree_node *arm_io = adt_find_node(dt_root, "arm-io");
+    if (!arm_io) return;
+
+    uint64_t *ranges = adt_get_prop_val(arm_io, "ranges");
+    if (!ranges) return;
+
+    size_t cells = adt_get_prop_len(arm_io, "ranges") / sizeof(uint64_t);
+    for (size_t i = 0; i + ARM_IO_RANGE_CELLS <= cells; i += ARM_IO_RANGE_CELLS) {
+        hwaddr parent = ranges[i + 1];
+        size_t len = ranges[i + 2];
+        char name[32];
+
+        if (0 == len) continue;
+        snprintf(name, sizeof(name), "legacy_armio%zu", i / ARM_IO_RANGE_CELLS);
+        alloc_zeroed_background(name, parent, len);
+        fprintf(stderr, "note: backing arm-io range %#" PRIx64 "+%#zx for a pre-SPTM tree\n",
+                (uint64_t)parent, len);
+    }
+}
+
 static void setup_mte(Object *cpuobj, MachineState *machine, struct xnu_boot_info *info) {
     MemoryRegion *tag_sysmem = NULL;
 
@@ -297,6 +345,7 @@ static void darwin_init(MachineState *ms) {
 
     init_sep(dt_root);
     init_cpu_impl(dt_root);
+    if (!amcc_node) init_legacy_armio(dt_root);
 
     // M4 (T8132) asserts SME's max VQ len is this many.
     // Specifically, rdsvl   x8, #0x1 must return 0x40.
